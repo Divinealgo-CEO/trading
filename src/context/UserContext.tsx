@@ -1,4 +1,11 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  ReactNode,
+} from "react";
+import { supabase } from "../lib/supabase";
 
 interface User {
   id: number;
@@ -7,74 +14,144 @@ interface User {
   email: string;
   phoneCode: string;
   phone: string;
-  status: 'Active' | 'Inactive';
+  status: "Active" | "Inactive";
+  createdAt?: string;
 }
 
 interface UserContextType {
   users: User[];
   setUsers: React.Dispatch<React.SetStateAction<User[]>>;
   totalUsers: number;
+  loading: boolean;
+  error: string | null;
+  refreshUsers: () => Promise<void>;
 }
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
 
-// Generate a unique ID with one letter and 4 numbers
-const generateUniqueId = () => {
-  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  const letter = letters[Math.floor(Math.random() * letters.length)];
-  const numbers = Math.floor(1000 + Math.random() * 9000);
-  return `${letter}${numbers}`;
-};
-
-// Generate 30 random users
-const generateRandomUsers = () => {
-  const names = ['John', 'Jane', 'Mike', 'Sarah', 'David', 'Emma', 'James', 'Emily'];
-  const domains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com'];
-  const phoneCodes = ['+1', '+7', '+20', '+27', '+30', '+31', '+32', '+33', '+34', '+36', '+39', '+40', '+41', '+43', '+44', '+45', '+46', '+47', '+48', '+49', '+51', '+52', '+53', '+54', '+55', '+56', '+57', '+58', '+60', '+61', '+62', '+63', '+64', '+65', '+66', '+81', '+82', '+84', '+86', '+90', '+91', '+92', '+93', '+94', '+95', '+98'];
-  
-  // Create a Set to track used IDs
-  const usedIds = new Set<number>();
-  
-  // Function to generate a unique ID
-  const generateUniqueId = () => {
-    let id = Math.floor(Math.random() * 1000000) + 1;
-    while (usedIds.has(id)) {
-      id = Math.floor(Math.random() * 1000000) + 1;
-    }
-    usedIds.add(id);
-    return id;
-  };
-  
-  return Array.from({ length: 30 }, (_, i) => ({
-    id: generateUniqueId(),
-    uniqueId: generateUniqueId(),
-    username: `${names[Math.floor(Math.random() * names.length)]}${Math.floor(Math.random() * 1000)}`,
-    email: `user${Math.floor(Math.random() * 10000)}@${domains[Math.floor(Math.random() * domains.length)]}`,
-    phoneCode: phoneCodes[Math.floor(Math.random() * phoneCodes.length)],
-    phone: `${Math.floor(1000000000 + Math.random() * 9000000000)}`,
-    status: Math.random() > 0.3 ? 'Active' as const : 'Inactive' as const,
-    createdAt: new Date(Date.now() - Math.floor(Math.random() * 30) * 24 * 60 * 60 * 1000).toISOString()
-  }));
-};
-
 export function UserProvider({ children }: { children: ReactNode }) {
-  const [users, setUsers] = useState<User[]>(() => [
-    {
-      id: 1,
-      uniqueId: 'T1234',
-      username: 'TestCustomer',
-      email: 'test@example.com',
-      phoneCode: '+1',
-      phone: '1234567890',
-      status: 'Active',
-      createdAt: new Date().toISOString()
-    },
-    ...generateRandomUsers()
-  ]);
+  const [users, setUsers] = useState<User[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
   const totalUsers = users.length;
 
+  // Function to fetch users from Supabase
+  const fetchUsers = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        throw error;
+      }
+
+      if (data) {
+        // Transform data if needed to match your interface
+        const formattedUsers = data.map((user) => ({
+          id: user.id,
+          uniqueId: user.id || user.id,
+          username: user.username,
+          email: user.email,
+          phoneCode: user.phone_code || user.phoneCode || "+1",
+          phone: user.phone,
+          status: user.status as "Active" | "Inactive",
+          createdAt: user.created_at || user.createdAt,
+        }));
+
+        setUsers(formattedUsers);
+      }
+    } catch (err) {
+      console.error("Error fetching users:", err);
+      setError(err instanceof Error ? err.message : "Failed to fetch users");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Initial fetch
+  useEffect(() => {
+    fetchUsers();
+
+    // Set up realtime subscription
+    const usersSubscription = supabase
+      .channel("users-changes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "profiles" },
+        (payload) => {
+          // Handle different events
+          if (payload.eventType === "INSERT") {
+            const newUser = payload.new as any;
+            setUsers((prev) => [
+              {
+                id: newUser.id,
+                uniqueId: newUser.unique_id || newUser.uniqueId,
+                username: newUser.username,
+                email: newUser.email,
+                phoneCode: newUser.phone_code || newUser.phoneCode || "+1",
+                phone: newUser.phone,
+                status: newUser.status as "Active" | "Inactive",
+                createdAt: newUser.created_at || newUser.createdAt,
+              },
+              ...prev,
+            ]);
+          } else if (payload.eventType === "UPDATE") {
+            const updatedUser = payload.new as any;
+            setUsers((prev) =>
+              prev.map((user) =>
+                user.id === updatedUser.id
+                  ? {
+                      id: updatedUser.id,
+                      uniqueId: updatedUser.unique_id || updatedUser.uniqueId,
+                      username: updatedUser.username,
+                      email: updatedUser.email,
+                      phoneCode:
+                        updatedUser.phone_code || updatedUser.phoneCode || "+1",
+                      phone: updatedUser.phone,
+                      status: updatedUser.status as "Active" | "Inactive",
+                      createdAt:
+                        updatedUser.created_at || updatedUser.createdAt,
+                    }
+                  : user
+              )
+            );
+          } else if (payload.eventType === "DELETE") {
+            const deletedUser = payload.old as any;
+            setUsers((prev) =>
+              prev.filter((user) => user.id !== deletedUser.id)
+            );
+          }
+        }
+      )
+      .subscribe();
+
+    // Clean up subscription
+    return () => {
+      usersSubscription.unsubscribe();
+    };
+  }, []);
+
+  // Function to manually refresh users
+  const refreshUsers = async () => {
+    await fetchUsers();
+  };
+
   return (
-    <UserContext.Provider value={{ users, setUsers, totalUsers }}>
+    <UserContext.Provider
+      value={{
+        users,
+        setUsers,
+        totalUsers,
+        loading,
+        error,
+        refreshUsers,
+      }}
+    >
       {children}
     </UserContext.Provider>
   );
@@ -83,7 +160,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
 export function useUsers() {
   const context = useContext(UserContext);
   if (context === undefined) {
-    throw new Error('useUsers must be used within a UserProvider');
+    throw new Error("useUsers must be used within a UserProvider");
   }
   return context;
 }
